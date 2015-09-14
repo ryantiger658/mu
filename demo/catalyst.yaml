@@ -1,0 +1,52 @@
+---
+  appname: catalyst
+  server_pools: 
+  - name: app
+    min-size: 2
+<% if $environment == 'prod' %>
+    max-size: 3
+<% else %>
+    wait_for_nodes: 2
+    max-size: 2
+<% end %>
+    loadbalancers:
+    - concurrent_load_balancer: app
+    run_list:
+    - role[catalyst]
+    ingress_rules:
+    - port: 80
+      lbs:
+      - app
+    - port: 443
+      lbs:
+      - app
+    - port: 22
+      hosts:
+      - 172.31.0.0/16
+    basis:
+      launch-config:
+        name: app
+        size: t2.medium
+        storage:
+        - device: /dev/sda1
+          size: 20
+  loadbalancers:
+  - name: app
+    cross_zone_unstickiness: true
+    ingress_rules:
+    - port: 80
+      hosts:
+      - 0.0.0.0/0
+    - port: 443
+      hosts:
+      - 0.0.0.0/0
+    healthcheck:
+      target: HTTP:80/
+      interval: 30
+      unhealthy-threshold: 3
+      healthy-threshold: 3
+    listeners:
+    - lb-port: 80
+      lb-protocol: HTTP
+      instance-port: 80
+      instance-protocol: HTTP
