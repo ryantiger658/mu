@@ -1,0 +1,56 @@
+#!/bin/bash
+
+DIST_VERSION=`rpm -qa \*-release | grep -Ei "redhat|centos" | cut -d"-" -f3`
+RUBY_VERSION="ruby-2.1.6"
+RUBY_RPM="https://s3.amazonaws.com/cap-public/${RUBY_VERSION}-1.el${DIST_VERSION}.x86_64.rpm"
+RUBY_INSTALL_DIR="/opt/rubies/${RUBY_VERSION}"
+RUBY_DIR="/usr/local/ruby-current"
+#tput will cause a noninteractive session to silently fail, else color things
+if [ -t 0 ]; then
+  NORM=`tput sgr0`
+  GREEN=`tput setaf 2`
+fi
+
+###############################################################################
+status_message()
+{
+  if [ "$1" != "" ];then
+    echo ""
+    echo "${GREEN}*******************************************************************************${NORM}"
+    echo $1
+    test "$2" != "" && echo $2
+    echo "${GREEN}*******************************************************************************${NORM}"
+    echo ""
+  fi
+}
+
+###############################################################################
+## Go fetch a current version of Ruby.  Some of our tools will need this,
+## and this isn't the same as the Ruby that is bundled with Chef, which
+## will reside in its own /opt/chef sandbox and should be left untouched.
+install_ruby()
+{
+  status_message "Installing latest ${BOLD}Ruby${NORM} stable snapshot"
+
+  if rpm -q $RUBY_VERSION > /dev/null ;then
+    echo "${RUBY_VERSION} already installed"
+  else
+    rpm -ivh $RUBY_RPM
+  fi
+
+  rm -f $RUBY_DIR
+  ln -s $RUBY_INSTALL_DIR $RUBY_DIR
+  #echo "PATH=\"$RUBY_DIR/bin:${PATH}\""
+  #if ! ( echo $PATH | egrep "(^|:)$RUBY_DIR/bin:" > /dev/null );then
+    ME=YOU
+    export ME
+    echo "ME=$ME"
+    PATH="$RUBY_DIR/bin:${PATH}"
+  #fi
+  #echo $PATH
+}
+
+if [ "$USER" == "root" ];then
+  install_ruby
+  ./install.rb
+fi
