@@ -161,7 +161,7 @@ module MU
             :deps_wait_on_my_creation => true,
             :waits_on_parent_completion => false,
             :class => generic_class_methods,
-            :instance => generic_instance_methods + [:groom, :subnets, :getSubnet, :listSubnets, :findBastion]
+            :instance => generic_instance_methods + [:groom, :subnets, :getSubnet, :listSubnets, :findBastion, :findNat]
         },
         :CacheCluster => {
             :has_multiples => true,
@@ -571,31 +571,45 @@ module MU
                 @config['vpc']["deploy_id"] = @deploy.deploy_id
               end
               vpcs = MU::MommaCat.findStray(
-                  @config['cloud'],
-                  "vpc",
-                  deploy_id: @config['vpc']["deploy_id"],
-                  cloud_id: @config['vpc']["vpc_id"],
-                  name: @config['vpc']["vpc_name"],
-                  tag_key: tag_key,
-                  tag_value: tag_value,
-                  region: @config['vpc']["region"],
-                  calling_deploy: @deploy,
-                  dummy_ok: true
+                @config['cloud'],
+                "vpc",
+                deploy_id: @config['vpc']["deploy_id"],
+                cloud_id: @config['vpc']["vpc_id"],
+                name: @config['vpc']["vpc_name"],
+                tag_key: tag_key,
+                tag_value: tag_value,
+                region: @config['vpc']["region"],
+                calling_deploy: @deploy,
+                dummy_ok: true
               )
               @vpc = vpcs.first if !vpcs.nil? and vpcs.size > 0
             end
-            if !@vpc.nil? and (@config['vpc'].has_key?("nat_host_id") or
-                @config['vpc'].has_key?("nat_host_tag") or
-                @config['vpc'].has_key?("nat_host_ip") or
-                @config['vpc'].has_key?("nat_host_name"))
+            if !@vpc.nil? and (
+              @config['vpc'].has_key?("nat_host_id") or
+              @config['vpc'].has_key?("nat_host_tag") or
+              @config['vpc'].has_key?("nat_host_ip") or
+              @config['vpc'].has_key?("nat_host_name")
+              )
+
               nat_tag_key, nat_tag_value = @config['vpc']['nat_host_tag'].split(/=/, 2) if !@config['vpc']['nat_host_tag'].nil?
-              @nat = @vpc.findBastion(
+
+              # Try to see if we have a NAT Gateway, if not find our NAT Instance 
+              @nat = @vpc.findNat(
+                nat_cloud_id: @config['vpc']['nat_host_id'],
+                nat_filter_key: "vpc-id",
+                region: @config['vpc']["region"],
+                nat_filter_value: @vpc.cloud_desc.vpc_id
+              )
+
+              if @nat.nil?
+                @nat = @vpc.findBastion(
                   nat_name: @config['vpc']['nat_host_name'],
                   nat_cloud_id: @config['vpc']['nat_host_id'],
                   nat_tag_key: nat_tag_key,
                   nat_tag_value: nat_tag_value,
                   nat_ip: @config['vpc']['nat_host_ip']
-              )
+                )
+              end
             end
           elsif self.class.cfg_name == "vpc"
             @vpc = self
@@ -710,6 +724,7 @@ module MU
               # Set our admin password first, if we need to
               if windows? and !win_set_pw.nil? and !win_check_for_pw.nil?
                 output = ssh.exec!(win_check_for_pw)
+                raise MU::Cloud::BootstrapTempFail, "Got nil output from ssh session, waiting and retrying" if output.nil?
                 if !output.match(/True/)
                   MU.log "Setting Windows password for user #{@config['windows_admin_username']}", details: ssh.exec!(win_set_pw)
                 end
@@ -717,11 +732,13 @@ module MU
               if windows?
                 output = ssh.exec!(win_env_fix)
                 output = ssh.exec!(win_installer_check)
+                raise MU::Cloud::BootstrapTempFail, "Got nil output from ssh session, waiting and retrying" if output.nil?
                 if output.match(/InProgress/)
                   raise MU::Cloud::BootstrapTempFail, "Windows Installer service is still doing something, need to wait"
                 end
                 if set_hostname and !@hostname_set and @mu_windows_name
                   output = ssh.exec!(win_check_for_hostname)
+                  raise MU::Cloud::BootstrapTempFail, "Got nil output from ssh session, waiting and retrying" if output.nil?
                   if !output.match(/#{@mu_windows_name}/)
                     MU.log "Setting Windows hostname to #{@mu_windows_name}", details: ssh.exec!(win_set_hostname)
                     @hostname_set = true
@@ -809,13 +826,14 @@ module MU
                 )
               end
               forced_windows_reboot = false
+              forced_windows_reboot_twice = false
               retries = 0
             rescue Net::SSH::HostKeyMismatch => e
               MU.log("Remembering new key: #{e.fingerprint}")
               e.remember_host!
               session.close
               retry
-            rescue SystemCallError, Timeout::Error, Errno::ECONNRESET, Errno::EHOSTUNREACH, Net::SSH::Proxy::ConnectError, SocketError, Net::SSH::Disconnect, Net::SSH::AuthenticationFailed, IOError => e
+            rescue SystemCallError, Timeout::Error, Errno::ECONNRESET, Errno::EHOSTUNREACH, Net::SSH::Proxy::ConnectError, SocketError, Net::SSH::Disconnect, Net::SSH::AuthenticationFailed, IOError, Net::SSH::ConnectionTimeout => e
               begin
                 session.close if !session.nil?
               rescue Net::SSH::Disconnect, IOError => e
@@ -829,6 +847,10 @@ module MU
 
               if retries < max_retries
                 retries = retries + 1
+                if retries > max_retries/2 and !forced_windows_reboot_twice
+                  forced_windows_reboot = false # another chance to unscrew Windows if it's been flailing for a while
+                  forced_windows_reboot_twice = true
+                end
                 msg = "ssh #{ssh_user}@#{@config['mu_name']}: #{e.message}, waiting #{retry_interval}s (attempt #{retries}/#{max_retries})", MU::WARN
                 if retries == 1 or (retries/max_retries <= 0.5 and (retries % 3) == 0)
                   MU.log msg, MU::NOTICE
