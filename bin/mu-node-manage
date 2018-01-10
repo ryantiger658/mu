@@ -300,7 +300,7 @@ def updateAWSMetaData(deploys = MU::MommaCat.listDeploys, nodes = [])
         if nodes.size > 0
           matched = false
           nodes.each { |n|
-            if n.match(/^#{Regexp.quote(pool_name)}-[a-z0-9]{3}$/)
+            if n.match(/^#{Regexp.quote(pool_name)}-[a-z0-9]{3}$/i)
               matched = true
             end
           }
@@ -312,10 +312,12 @@ def updateAWSMetaData(deploys = MU::MommaCat.listDeploys, nodes = [])
         resp = MU::Cloud::AWS.autoscale.describe_auto_scaling_groups(
             auto_scaling_group_names: [pool_name]
         )
+
         if resp.nil?
           MU.log "Failed to locate any Autoscale Groups named #{pool_name}", MU::WARN
           next
         end
+
         resp.auto_scaling_groups.each { |asg|
           launch = MU::Cloud::AWS.autoscale.describe_launch_configurations(
               launch_configuration_names: [asg.launch_configuration_name]
@@ -532,6 +534,9 @@ def sslCerts(deploys = MU::MommaCat.listDeploys, nodes = [], vaults_only: false)
 
       server_obj = mommacat.findLitterMate(type: "server", mu_name: nodename)
       mommacat.nodeSSLCerts(server_obj)
+      if server['conf'].has_key?("basis")
+        mommacat.nodeSSLCerts(server_obj, true)
+      end
     }
   }
 end

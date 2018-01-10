@@ -70,6 +70,9 @@ case node.platform_family
 
     case elversion
     when 6
+      service "messagebus" do
+        action [:enable, :start]
+      end
       service "oddjobd" do
         start_command "sh -x /etc/init.d/oddjobd start" # seems to actually work
         action [:enable, :start]
